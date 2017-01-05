@@ -220,24 +220,22 @@ namespace DijnetInvoiceDownloader
       }
       else if (e.Url.AbsolutePath.Equals(szamla_search_submit_path))
       {        
-        HtmlElement listframetable_N1015_scroll_outer = webBrowser1.Document.GetElementById("listframetable_N1015A_scroll");
-        if (listframetable_N1015_scroll_outer == null)
-        {
-          listframetable_N1015_scroll_outer = webBrowser1.Document.GetElementById("listframetable_N1015B_scroll");
-          if (listframetable_N1015_scroll_outer == null)
+          HtmlElement listframetable_szamla = null;
+
+          HtmlElementCollection theElementCollection = default(HtmlElementCollection);
+          theElementCollection = webBrowser1.Document.GetElementsByTagName("TABLE");
+          foreach (HtmlElement curElement in theElementCollection)
           {
-            listframetable_N1015_scroll_outer = webBrowser1.Document.GetElementById("listframetable_N1015C_scroll");
+              if (curElement.GetAttribute("className").ToString() == "szamla_table xt_lower")
+              {
+                  listframetable_szamla = curElement;
+              }
           }
-        }
-        if (listframetable_N1015_scroll_outer != null)
-        {
-          HtmlElement listframetable_N1015_scroll_outer_next_div = listframetable_N1015_scroll_outer.NextSibling;
-          if (listframetable_N1015_scroll_outer_next_div != null)
+
+          if (listframetable_szamla != null)
           {
-            HtmlElement listframetable_N1015_scroll = listframetable_N1015_scroll_outer_next_div.FirstChild;
-            if (listframetable_N1015_scroll != null)
-            {
-              HtmlElementCollection rows = listframetable_N1015_scroll.GetElementsByTagName("tr");
+
+              HtmlElementCollection rows = listframetable_szamla.GetElementsByTagName("tr");
 
               rowCount = 0;
               rowIndex = 0;
@@ -306,9 +304,7 @@ namespace DijnetInvoiceDownloader
               {
                 webBrowser1.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, logout_path, string.Empty));
               }
-            }
-          }
-        }
+         }
       }
       else if (e.Url.AbsolutePath.Equals(logout_path))
       {
