@@ -51,13 +51,17 @@ namespace DijnetInvoiceDownloader
     XDocument invoices = new XDocument();
     int[][] missingInvoiceIndexes = null;
 
-    bool filterByService = false;
+    bool filterByService = true;
     int rowIndex = 0;
     int rowCount = 0;
 
     public Form1()
     {
       InitializeComponent();
+      btnStop.Enabled = false;
+#if !DEBUG
+      tabControl1.TabPages.Remove(tabPage2);
+#endif
       txtPath.Text = filePath;
       BuildRepository(txtPath.Text);
     }
@@ -144,6 +148,7 @@ namespace DijnetInvoiceDownloader
     private void btnStart_Click(object sender, EventArgs e)
     {
       btnStart.Enabled = false;
+      btnStop.Enabled = true;
 
       services.Clear();
 
@@ -153,6 +158,11 @@ namespace DijnetInvoiceDownloader
       BuildRepository(txtPath.Text);
 
       webBrowser1.Navigate(dijnet_hu);
+    }
+
+    private void btnStop_Click(object sender, EventArgs e)
+    {
+      webBrowser1.Navigate(string.Format(url_format, webBrowser1.Url.Scheme, webBrowser1.Url.DnsSafeHost, logout_path, string.Empty));
     }
 
     private void webBrowser1_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
@@ -212,6 +222,9 @@ namespace DijnetInvoiceDownloader
         if (services.Count == 0 || (filterByService && !NextService()))
         {
           btnStart.Enabled = true;
+          btnStop.Enabled = false;
+          webBrowser1.Navigate("");
+          webBrowser2.Navigate("");
         }
         else
         {
@@ -289,7 +302,7 @@ namespace DijnetInvoiceDownloader
                   xrow.Add(new XAttribute("index", i++));
                 }
 
-                missingInvoiceIndexes = invoices.Root.Elements("Invoice").Select((element, index) => new { Element = element, Index = index }).Where(x => x.Element.Attribute("fajlok") == null || x.Element.Attribute("fajlok").Value == "0").Select(x => new int[] { x.Index, Convert.ToInt32(x.Element.Attribute("index").Value) } ).ToArray();
+                missingInvoiceIndexes = invoices.Root.Elements("Invoice").Select((element, index) => new { Element = element, Index = index }).Where(x => x.Element.Attribute("index") != null && (x.Element.Attribute("fajlok") == null || x.Element.Attribute("fajlok").Value == "0")).Select(x => new int[] { x.Index, Convert.ToInt32(x.Element.Attribute("index").Value) }).ToArray();
                 rowCount = missingInvoiceIndexes.Length;
                 AddLog(string.Format("{0} item(s) will need to be updated!", rowCount));
               }
@@ -313,6 +326,9 @@ namespace DijnetInvoiceDownloader
       else if (e.Url.AbsolutePath.Equals(logout_path))
       {
         btnStart.Enabled = true;
+        btnStop.Enabled = false;
+        webBrowser1.Navigate("");
+        webBrowser2.Navigate("");
       }
     }
 
@@ -454,7 +470,7 @@ namespace DijnetInvoiceDownloader
       {
         if (rowIndex < rowCount)
         {
-          webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_select_path, string.Format(szamla_select_query_format, missingInvoiceIndexes[rowIndex++][0])));
+          webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_select_path, string.Format(szamla_select_query_format, missingInvoiceIndexes[rowIndex++][1])));
         }
         else if (!filterByService || !NextService())
         {
