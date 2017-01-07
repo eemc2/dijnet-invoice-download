@@ -232,95 +232,127 @@ namespace DijnetInvoiceDownloader
         }
       }
       else if (e.Url.AbsolutePath.Equals(szamla_search_submit_path))
-      {        
-        HtmlElement listframetable_N1015_scroll_outer = webBrowser1.Document.GetElementById("listframetable_N1015A_scroll");
-        if (listframetable_N1015_scroll_outer == null)
+      {
+        HtmlElement content_div = webBrowser1.Document.GetElementById("content");
+        if (content_div != null)
         {
-          listframetable_N1015_scroll_outer = webBrowser1.Document.GetElementById("listframetable_N1015B_scroll");
-          if (listframetable_N1015_scroll_outer == null)
+          HtmlElementCollection content_div_tables = content_div.GetElementsByTagName("table");
+          if (content_div_tables != null)
           {
-            listframetable_N1015_scroll_outer = webBrowser1.Document.GetElementById("listframetable_N1015C_scroll");
-          }
-        }
-        if (listframetable_N1015_scroll_outer != null)
-        {
-          HtmlElement listframetable_N1015_scroll_outer_next_div = listframetable_N1015_scroll_outer.NextSibling;
-          if (listframetable_N1015_scroll_outer_next_div != null)
-          {
-            HtmlElement listframetable_N1015_scroll = listframetable_N1015_scroll_outer_next_div.FirstChild;
-            if (listframetable_N1015_scroll != null)
+            HtmlElement listframetable_outer = null;
+            string listframetable_id = null;
+
+            foreach (HtmlElement content_div_table in content_div_tables)
             {
-              HtmlElementCollection rows = listframetable_N1015_scroll.GetElementsByTagName("tr");
-
-              rowCount = 0;
-              rowIndex = 0;
-
-              if (invoices.Root != null && invoices.Root.Name != "Invoices")
+              if (content_div_table.Id != null && content_div_table.Id.StartsWith("listframetable_"))
               {
-                invoices.RemoveNodes();
-              }
-              if (invoices.Root == null)
-              {
-                invoices.Add(new XElement("Invoices"));
-              }
-
-              invoices.Root.Elements("Invoice").Attributes("index").Remove();
-
-              try
-              {
-                int i = 0;
-                foreach (HtmlElement r in rows)
-                {
-                  Dictionary<string, string> row = new Dictionary<string, string>();
-                  foreach (HtmlElement anchor in r.GetElementsByTagName("a"))
-                  {
-                    Uri href = new Uri(anchor.GetAttribute("href"));
-                    Dictionary<string, string> query_parts = href.Query.TrimStart('?').Split('&').Select(x => x.Split('=')).ToDictionary(x => x[0], x => (x.Length > 1) ? x[1] : "");
-                    row.Add(Uri.UnescapeDataString(query_parts["vfw_colid"]).Split('|')[0].Trim(), anchor.InnerText.Trim());
-                  }
-
-                  XElement xrow = invoices.Root.Elements("Invoice").Where(x => x.Attribute("szamlaszam").Value == row["szamlaszam"]).FirstOrDefault();
-                  if (xrow == null)
-                  {
-                    invoices.Root.Add(xrow = new XElement("Invoice"));
-                  }
-
-                  Dictionary<string, string>.Enumerator columnEnum = row.GetEnumerator();
-                  while (columnEnum.MoveNext())
-                  {
-                    XAttribute a;
-                    if ((a = xrow.Attribute(columnEnum.Current.Key)) == null)
-                    {
-                      xrow.Add(a = new XAttribute(columnEnum.Current.Key, columnEnum.Current.Value));
-                    }
-                    else
-                    {
-                      a.SetValue(columnEnum.Current.Value);
-                    }
-                  }
-
-                  xrow.Add(new XAttribute("index", i++));
-                }
-
-                missingInvoiceIndexes = invoices.Root.Elements("Invoice").Select((element, index) => new { Element = element, Index = index }).Where(x => x.Element.Attribute("index") != null && (x.Element.Attribute("fajlok") == null || x.Element.Attribute("fajlok").Value == "0")).Select(x => new int[] { x.Index, Convert.ToInt32(x.Element.Attribute("index").Value) }).ToArray();
-                rowCount = missingInvoiceIndexes.Length;
-                AddLog(string.Format("{0} item(s) will need to be updated!", rowCount));
-              }
-              catch (Exception ex)
-              {
-                AddLog("Hiba: " + ex.Message);
-              }
-
-              if (rowCount > 0)
-              {
-                webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_select_path, string.Format(szamla_select_query_format, missingInvoiceIndexes[rowIndex++][1])));
-              }
-              else if (!filterByService || !NextService())
-              {
-                webBrowser1.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, logout_path, string.Empty));
+                listframetable_outer = content_div_table;
+                listframetable_id = content_div_table.Id;
+                break;
               }
             }
+
+            if (listframetable_outer != null)
+            {
+              HtmlElement listframetable_outer_next_div = listframetable_outer.NextSibling;
+              if (listframetable_outer_next_div != null && listframetable_outer_next_div.TagName.ToLower() == "div")
+              {
+                HtmlElement listframetable = listframetable_outer_next_div.FirstChild;
+                if (listframetable != null && listframetable.Id != null && listframetable.Id.Equals(listframetable_id))
+                {
+                  HtmlElementCollection rows = listframetable.GetElementsByTagName("tr");
+
+                  rowCount = 0;
+                  rowIndex = 0;
+
+                  if (invoices.Root != null && invoices.Root.Name != "Invoices")
+                  {
+                    invoices.RemoveNodes();
+                  }
+                  if (invoices.Root == null)
+                  {
+                    invoices.Add(new XElement("Invoices"));
+                  }
+
+                  invoices.Root.Elements("Invoice").Attributes("index").Remove();
+
+                  try
+                  {
+                    int i = 0;
+                    foreach (HtmlElement r in rows)
+                    {
+                      Dictionary<string, string> row = new Dictionary<string, string>();
+                      foreach (HtmlElement anchor in r.GetElementsByTagName("a"))
+                      {
+                        Uri href = new Uri(anchor.GetAttribute("href"));
+                        Dictionary<string, string> query_parts = href.Query.TrimStart('?').Split('&').Select(x => x.Split('=')).ToDictionary(x => x[0], x => (x.Length > 1) ? x[1] : "");
+                        row.Add(Uri.UnescapeDataString(query_parts["vfw_colid"]).Split('|')[0].Trim(), anchor.InnerText.Trim());
+                      }
+
+                      XElement xrow = invoices.Root.Elements("Invoice").Where(x => x.Attribute("szamlaszam").Value == row["szamlaszam"]).FirstOrDefault();
+                      if (xrow == null)
+                      {
+                        invoices.Root.Add(xrow = new XElement("Invoice"));
+                      }
+
+                      Dictionary<string, string>.Enumerator columnEnum = row.GetEnumerator();
+                      while (columnEnum.MoveNext())
+                      {
+                        XAttribute a;
+                        if ((a = xrow.Attribute(columnEnum.Current.Key)) == null)
+                        {
+                          xrow.Add(a = new XAttribute(columnEnum.Current.Key, columnEnum.Current.Value));
+                        }
+                        else
+                        {
+                          a.SetValue(columnEnum.Current.Value);
+                        }
+                      }
+
+                      xrow.Add(new XAttribute("index", i++));
+                    }
+
+                    missingInvoiceIndexes = invoices.Root.Elements("Invoice").Select((element, index) => new { Element = element, Index = index }).Where(x => x.Element.Attribute("index") != null && (x.Element.Attribute("fajlok") == null || x.Element.Attribute("fajlok").Value == "0")).Select(x => new int[] { x.Index, Convert.ToInt32(x.Element.Attribute("index").Value) }).ToArray();
+                    rowCount = missingInvoiceIndexes.Length;
+                    AddLog(string.Format("{0} item(s) will need to be updated!", rowCount));
+                  }
+                  catch (Exception ex)
+                  {
+                    AddLog("Error: " + ex.Message);
+                  }
+
+                  if (rowCount > 0)
+                  {
+                    webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_select_path, string.Format(szamla_select_query_format, missingInvoiceIndexes[rowIndex++][1])));
+                  }
+                  else if (!filterByService || !NextService())
+                  {
+                    webBrowser1.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, logout_path, string.Empty));
+                  }
+                }
+                else
+                {
+                  AddLog("Error: first 'listframetable_*' table's next div sibling's child is not a table or its id is other than the first 'listframetable_*' table's id!");
+                }
+              }
+              else
+              {
+                AddLog("Error: next sibling is not a div from 'listframetable_*' found in 'content' tables!");
+              }
+            }
+            else
+            {
+              AddLog("Error: no 'listframetable_*' found in 'content' tables!");
+            }
           }
+          else
+          {
+            AddLog("Error: no tables in 'content' div!");
+          }
+        }
+        else
+        {
+          AddLog("Error: 'content' div not found!");
         }
       }
       else if (e.Url.AbsolutePath.Equals(logout_path))
