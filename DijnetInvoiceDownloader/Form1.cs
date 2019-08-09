@@ -3,78 +3,100 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Runtime.InteropServices;
 using System.Text;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Runtime.Serialization.Json;
 using System.Windows.Forms;
 using System.Xml.Linq;
+
+using HtmlAgilityPack;
 
 namespace DijnetInvoiceDownloader
 {
   public partial class Form1 : Form
   {
-    [DllImport("wininet.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    static extern bool InternetGetCookieEx(string pchURL, string pchCookieName, StringBuilder pchCookieData, ref uint pcchCookieData, int dwFlags, IntPtr lpReserved);
-    const int INTERNET_COOKIE_HTTPONLY = 0x00002000;
-
-    public static string GetGlobalCookies(string uri)
-    {
-      uint datasize = 1024;
-      StringBuilder cookieData = new StringBuilder((int)datasize);
-      if (InternetGetCookieEx(uri, null, cookieData, ref datasize, INTERNET_COOKIE_HTTPONLY, IntPtr.Zero)
-          && cookieData.Length > 0)
-      {
-        return cookieData.ToString();
-      }
-      else
-      {
-        return null;
-      }
-    }
-
-    const string dijnet_hu = "dijnet.hu";
-    const string url_format = "{0}://{1}{2}{3}";
+    const string dijnet_base_url = "https://www.dijnet.hu/ekonto/";
     const string repository_path_format = @"\{0}\{1}_{2}";
+    const string add_query_item = "&{0}={1}";
 
-    const string login_path = "/ekonto/control/login";
-    const string login_check_password_path = "/ekonto/login/login_check_password";
-    const string szamla_search_path = "/ekonto/control/szamla_search";
-    const string szamla_search_submit_path = "/ekonto/control/szamla_search_submit";
-    const string szamla_select_path = "/ekonto/control/szamla_select";
+    //const string xpath_users_login_name_in_header = "//div[@id='header_menu']//span[contains('{0}', text())]";
+    const string xpath_users_login_name_in_header = "//nav[@id='main-menu']//p/strong[contains('{0}', text())]";
+    //const string xpath_group_items = "//select[@name='{0}']/option[@value!='']";
+    const string xpath_script_contrains_var_ropts = "//script[not(@src) and contains(., 'var ropts')]";
+    const string xpath_last_listframetable_rows = "//div[@id='content']//table[starts-with(@id, 'listframetable_')][last()]/tbody/tr";
+    const string xpath_div_tab_szamla_letolt = "//div[@id='tab_szamla_letolt']";
+
+    const string main_path = "control/main";
+    const string login_check_ajax_path = "login/login_check_ajax";
+    const string login_check_ajax_post_data_format = "username={0}&password={1}";
+    const string login_check_password_path = "login/login_check_password";
+    const string login_check_password_post_data_format = "vfw_form=login_check_password&username={0}&password={1}";
+    const string szamla_search_submit_path = "control/szamla_search_submit";
+    const string szamla_search_submit_post_data = "vfw_form=szamla_search_submit&vfw_coll=szamla_search_params";
+    const string szamla_search_path = "control/szamla_search";
+    const string szamla_select_path = "control/szamla_select";
     const string szamla_select_query_format = "?vfw_coll=szamla_list&vfw_coll_index=0&vfw_rowid={0}&vfw_colid=szamlaszam%7Cegyenleginfo_0";
-    const string szamla_letolt_path = "/ekonto/control/szamla_letolt";
-    const string szamla_list_path = "/ekonto/control/szamla_list";
-    const string logout_path = "/ekonto/control/logout";
+    const string szamla_letolt_path = "control/szamla_letolt";
+    const string szamla_list_path = "control/szamla_list";
+    const string logout_path = "control/logout";
+
+    const string field_ugyfelazon = "ugyfelazon";
+    const string field_szamlaszam = "szamlaszam";
+    const string field_bemdat = "bemdat";
+
+    const string tag_Invoices = "Invoices";
+    const string tag_Invoice = "Invoice";
+    const string tag_File = "File";
+    const string tag_index = "index";
+    const string tag_files = "files";
 
     const string filePath = @".";
 
+    CookieContainer cookieJar = new CookieContainer();
+
     Dictionary<string, string> contracts = new Dictionary<string, string>();
-    Dictionary<string, string>.Enumerator contractsKeyEnumerator;
+    Dictionary<string, string> serviceProviders = new Dictionary<string, string>();
     XDocument invoices = new XDocument();
     int[][] missingInvoiceIndexes = null;
 
-    bool groupByContracts = false;
-    int rowIndex = 0;
-    int rowCount = 0;
+    bool stopped = false;
+    GroupBy groupBy = GroupBy.Contracts;
 
     public Form1()
     {
       InitializeComponent();
-      
+
+      ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+
+      stopped = false;
+
       btnStop.Enabled = false;
-#if !DEBUG
-      tabControl1.TabPages.Remove(tabPage2);
-#endif
+
       txtPath.Text = filePath;
 
-      chkGroupByContracts.Checked = groupByContracts;
-      
-      BuildRepository(txtPath.Text);
+      switch (groupBy)
+      {
+        case GroupBy.None:
+          radioButton1.Checked = true;
+          break;
+
+        case GroupBy.Contracts:
+          radioButton2.Checked = true;
+          break;
+
+        case GroupBy.ServiceProviders:
+          radioButton3.Checked = true;
+          break;
+      }
+
+      BuildRepositoryIndex(txtPath.Text);
     }
 
-    private bool BuildRepository(string path)
+    private bool BuildRepositoryIndex(string path)
     {
       invoices.RemoveNodes();
-      invoices.Add(new XElement("Invoices"));
+      invoices.Add(new XElement(tag_Invoices));
 
       try
       {
@@ -92,18 +114,20 @@ namespace DijnetInvoiceDownloader
               string szamlaszam = invoice_key.Substring(9, invoice_key.Length - 9);
 
               XElement invoice;
-              invoices.Root.Add(invoice = new XElement("Invoice"));
+              invoices.Root.Add(invoice = new XElement(tag_Invoice));
 
-              invoice.Add(new XAttribute("szamlaszam", szamlaszam));
-              invoice.Add(new XAttribute("bemdat", bemdat));
+              invoice.Add(new XAttribute(field_szamlaszam, szamlaszam));
+              invoice.Add(new XAttribute(field_bemdat, bemdat));
+              //int i = di.Name.IndexOf(" (");
+              //invoice.Add(new XAttribute(field_ugyfelazon, (i >= 0) ? di.Name.Substring(0, i) : di.Name));
 
               foreach (FileInfo fi in idi.EnumerateFiles())
               {
-                invoice.Add(new XElement("File", fi.Name));
+                invoice.Add(new XElement(tag_File, fi.Name));
               }
 
               int file_count = invoice.Elements().Count();
-              invoice.Add(new XAttribute("fajlok", file_count));
+              invoice.Add(new XAttribute(tag_files, file_count));
             }
           }
         }
@@ -121,7 +145,7 @@ namespace DijnetInvoiceDownloader
     {
       lstLog.Items.Add(info);
 
-      int visibleItemCount = lstLog.﻿DisplayRectangle.Height / lstLog.ItemHeight;
+      int visibleItemCount = lstLog.DisplayRectangle.Height / lstLog.ItemHeight;
 
       if (visibleItemCount < lstLog.Items.Count - lstLog.TopIndex)
       {
@@ -131,36 +155,65 @@ namespace DijnetInvoiceDownloader
 
     private void Start()
     {
+      stopped = false;
+
       btnStart.Enabled = false;
       btnStop.Enabled = true;
       btnBrowse.Enabled = false;
       txtUserName.ReadOnly = true;
       txtPassword.ReadOnly = true;
-      chkGroupByContracts.Enabled = false;
+      groupBox1.Enabled = false;
 
       contracts.Clear();
+      serviceProviders.Clear();
 
-      lstContracts.Items.Clear();
+      lstGroupItems.Items.Clear();
       lstLog.Items.Clear();
 
-      BuildRepository(txtPath.Text);
+      BuildRepositoryIndex(txtPath.Text);
 
-      groupByContracts = chkGroupByContracts.Checked;
+      if (radioButton1.Checked)
+      {
+        groupBy = GroupBy.None;
+      }
+      else if (radioButton2.Checked)
+      {
+        groupBy = GroupBy.Contracts;
+      }
+      else if (radioButton3.Checked)
+      {
+        groupBy = GroupBy.ServiceProviders;
+      }
 
-      webBrowser1.Navigate(dijnet_hu);
+      cookieJar = new CookieContainer();
+
+      try
+      {
+        try
+        {
+          DownloadInvoices();
+        }
+        catch (Exception ex)
+        {
+          AddLog("Error: " + ex.Message);
+        }
+      }
+      finally
+      {
+        Stop();
+      }
     }
 
     private void Stop()
     {
-      webBrowser1.Navigate("");
-      webBrowser2.Navigate("");
-
       btnBrowse.Enabled = true;
       txtUserName.ReadOnly = false;
       txtPassword.ReadOnly = false;
-      chkGroupByContracts.Enabled = true;
+      groupBox1.Enabled = true;
       btnStop.Enabled = false;
       btnStart.Enabled = true;
+
+      cookieJar = null;
     }
 
     private void btnBrowse_Click(object sender, EventArgs e)
@@ -176,7 +229,7 @@ namespace DijnetInvoiceDownloader
           break;
         }
       }
-      while (!(repoBuilt = BuildRepository(folderBrowserDialog1.SelectedPath)));
+      while (!(repoBuilt = BuildRepositoryIndex(folderBrowserDialog1.SelectedPath)));
 
       if (repoBuilt)
       {
@@ -191,420 +244,451 @@ namespace DijnetInvoiceDownloader
 
     private void btnStop_Click(object sender, EventArgs e)
     {
-      webBrowser1.Navigate(string.Format(url_format, webBrowser1.Url.Scheme, webBrowser1.Url.DnsSafeHost, logout_path, string.Empty));
+      btnStop.Enabled = false;
+      stopped = true;
+      //webBrowser1.Navigate(string.Format(url_format, webBrowser1.Url.Scheme, webBrowser1.Url.DnsSafeHost, logout_path, string.Empty));
     }
 
-    private void webBrowser1_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
+    private HtmlAgilityPack.HtmlNode Navigate(Uri uri)
     {
-      if (e.Url.AbsolutePath.Equals(login_path))
+      return Navigate(uri, string.Empty);
+    }
+
+    private HtmlAgilityPack.HtmlNode Navigate(string uriString)
+    {
+      return Navigate(new Uri(uriString), string.Empty);
+    }
+
+    private HtmlAgilityPack.HtmlNode NavigatePath(string uriPathString)
+    {
+      return Navigate(new Uri(dijnet_base_url + uriPathString), string.Empty);
+    }  
+
+    private HtmlAgilityPack.HtmlNode Navigate(Uri uri, string postData)
+    {
+      HtmlAgilityPack.HtmlDocument doc = new HtmlAgilityPack.HtmlDocument();
+
+      using(WebClient wc = new WebClient())
       {
-        HtmlElement loginform = webBrowser1.Document.Forms["loginform"];
-        if (loginform != null)
-        {
-          HtmlElementCollection inputs = loginform.GetElementsByTagName("input");
+        wc.Headers[HttpRequestHeader.Accept] = "text/html";
+        //wc.Headers[HttpRequestHeader.Accept] = "text/html, application/xhtml+xml, application/xml; q=0.9, */*; q=0.8";
+        //wc.Headers[HttpRequestHeader.AcceptEncoding] = "gzip, deflate, br";
+        //wc.Headers[HttpRequestHeader.AcceptLanguage] = "hu-HU";
+        //wc.Headers[HttpRequestHeader.CacheControl] = "max-age=0";
+        //wc.Headers[HttpRequestHeader.Connection] = "Keep-Alive";
+        wc.Headers[HttpRequestHeader.ContentType] = "application/x-www-form-urlencoded";
+        wc.Headers[HttpRequestHeader.Cookie] = cookieJar.GetCookieHeader(uri);
+        //wc.Headers[HttpRequestHeader.Referer] = uri.AbsoluteUri;
 
-          foreach (HtmlElement i in inputs)
-          {
-            switch (i.Name)
-            {
-              case "username":
-                i.InnerText = txtUserName.Text;
-                break;
+        string htmlResult = wc.UploadString(uri, postData);
 
-              case "password":
-                i.InnerText = txtPassword.Text;
-                break;
+        cookieJar.SetCookies(uri, wc.ResponseHeaders[HttpResponseHeader.SetCookie]);
 
-              default:
-                if (i.GetAttribute("value").Equals("Belépek"))
-                {
-                  i.InvokeMember("click");
-                }
-                break;
-            }
-          }
-        }
-        else
-        {
-          AddLog("Error: 'loginform' form not found!'");
-        }
+        doc.LoadHtml(htmlResult);
       }
-      else if (e.Url.AbsolutePath.Equals(login_check_password_path))
+
+      return doc.DocumentNode;
+    }
+
+    private bool Download(Uri uri, out string fileName, out byte[] fileData)
+    {
+      fileName = null;
+
+      using (WebClient wc = new WebClient())
       {
-        webBrowser1.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_search_path, string.Empty));
-      }
-      else if (e.Url.AbsolutePath.Equals(szamla_search_path))
-      {
-        if (webBrowser1.Document.Forms.Count > 0)
+        wc.Headers[HttpRequestHeader.Cookie] = cookieJar.GetCookieHeader(uri);
+
+        fileData = wc.DownloadData(uri);
+
+        cookieJar.SetCookies(uri, wc.ResponseHeaders[HttpResponseHeader.SetCookie]);
+
+        string[] content_disposition = wc.ResponseHeaders["Content-Disposition"].Split(';');
+        if (content_disposition != null && content_disposition.Length > 1 && content_disposition[0] == "attachment")
         {
-          contracts.Clear();
-          lstContracts.Items.Clear();
-
-          HtmlElement form = webBrowser1.Document.Forms[0];
-
-          foreach (HtmlElement select in form.GetElementsByTagName("select"))
+          string[] filename_attr = content_disposition[1].Split('=');
+          if (filename_attr != null && filename_attr.Length > 1 && filename_attr[0] == "filename")
           {
-            switch (select.Name)
-            {
-              case "regszolgid":
-                foreach (HtmlElement option in select.Children)
-                {
-                  if (option.InnerText != null)
-                  {
-                    contracts.Add(option.GetAttribute("value"), option.InnerText);
-                    lstContracts.Items.Add(option.InnerText);
-                  }
-                }
-                contractsKeyEnumerator = contracts.GetEnumerator();
-                break;
-            }
-          }
-
-          if (contracts.Count == 0 || (groupByContracts && !NextService()))
-          {
-            Stop();
+            fileName = filename_attr[1];
+            return true;
           }
           else
           {
-            RunQuery();
+            AddLog("Error: second attribute is not a filename in 'Content-Disposition' header!");
           }
         }
         else
         {
-          AddLog("Error: no forms found!");
+          AddLog("Error: no 'Content-Disposition' header in http response or it's not an attachment with at least another attribute!");
         }
+        return false;
       }
-      else if (e.Url.AbsolutePath.Equals(szamla_search_submit_path))
-      {
-        HtmlElement content_div = webBrowser1.Document.GetElementById("content");
-        if (content_div != null)
-        {
-          HtmlElementCollection content_div_tables = content_div.GetElementsByTagName("table");
-          if (content_div_tables != null)
-          {
-            HtmlElement listframetable_outer = null;
-            string listframetable_id = null;
+    }
 
-            foreach (HtmlElement content_div_table in content_div_tables)
+    private HtmlAgilityPack.HtmlNode Navigate(string uriString, string postData)
+    {
+      return Navigate(new Uri(uriString), postData);
+    }
+
+    private HtmlAgilityPack.HtmlNode NavigatePath(string uriPathString, string postData)
+    {
+      return Navigate(new Uri(dijnet_base_url + uriPathString), postData);
+    }
+
+    static Uri GetAbsoluteUrlString(string url)
+    {
+      var uri = new Uri(url, UriKind.RelativeOrAbsolute);
+      if (!uri.IsAbsoluteUri)
+        uri = new Uri(new Uri(dijnet_base_url), uri);
+      return uri;
+    }
+
+    private void DownloadInvoices()
+    {
+      HtmlAgilityPack.HtmlNode node;
+
+      Uri baseUrl = new Uri(dijnet_base_url);
+
+      Uri url = new Uri(baseUrl, login_check_password_path);
+      node = Navigate(url, string.Format(login_check_password_post_data_format, txtUserName.Text, txtPassword.Text));
+      //if ((node = node.SelectSingleNode(string.Format(xpath_users_login_name_in_header, txtUserName.Text))) != null && (node = node.SelectSingleNode("em")) != null && WebUtility.HtmlDecode(node.InnerText).StartsWith("Bejelentkezési név:"))
+      if ((node = node.SelectSingleNode(string.Format(xpath_users_login_name_in_header, txtUserName.Text))) != null && WebUtility.HtmlDecode(node.ParentNode.InnerText).StartsWith("Bejelentkezési név:"))
+      {
+        node = Navigate(url = new Uri(baseUrl, szamla_search_path));
+/*
+        HtmlAgilityPack.HtmlNodeCollection contractNodes = node.SelectNodes(string.Format(xpath_group_items, GroupBy.Contracts.ToFilterString()));
+        if (contractNodes != null)
+        {
+          foreach (HtmlAgilityPack.HtmlNode contract in contractNodes)
+          {
+            contracts.Add(contract.GetAttributeValue("value", ""), WebUtility.HtmlDecode((contract.NextSibling != null) ? contract.NextSibling.InnerText : ""));
+          }
+        }
+
+        HtmlAgilityPack.HtmlNodeCollection serviceProviderNodes = node.SelectNodes(string.Format(xpath_group_items, GroupBy.ServiceProviders.ToFilterString()));
+        if (serviceProviderNodes != null)
+        {
+          foreach (HtmlAgilityPack.HtmlNode serviceProvider in serviceProviderNodes)
+          {
+            serviceProviders.Add(serviceProvider.GetAttributeValue("value", ""), WebUtility.HtmlDecode((serviceProvider.NextSibling != null) ? serviceProvider.NextSibling.InnerText : ""));
+          }
+        }
+*/
+        HtmlAgilityPack.HtmlNodeCollection scriptNodes = node.SelectNodes(xpath_script_contrains_var_ropts);
+        if (scriptNodes != null)
+        {
+          foreach (HtmlAgilityPack.HtmlNode script in scriptNodes)
+          {
+            StringReader sr = new StringReader(script.InnerHtml);
+            string line;
+            string[] line_parts;
+            while (((line = sr.ReadLine()) != null) && ((line_parts = line.Trim().Split("=".ToCharArray())) != null))
             {
-              if (content_div_table.Id != null && content_div_table.Id.StartsWith("listframetable_"))
+              string[] var_parts;
+              if ((line_parts.Length > 1) && ((var_parts = line_parts[0].Split(" \t".ToCharArray())) != null))
               {
-                listframetable_outer = content_div_table;
-                listframetable_id = content_div_table.Id;
-                break;
+                var_parts = var_parts.Where(x => x != String.Empty).ToArray();
+                if ((var_parts.Length > 1) && (var_parts[0] == "var") && (var_parts[1] == "ropts"))
+                {                 
+                  string json = String.Join("=", line_parts, 1, line_parts.Length - 1).Trim().TrimEnd(';');
+                  JavaScriptSerializer jss = new JavaScriptSerializer();
+                  List<ServiceProviderContracts> spcs = jss.Deserialize<List<ServiceProviderContracts>>(json);
+
+                  foreach (ServiceProviderContracts spc in spcs.OrderBy(x => x.aliasnev))
+                  {
+                    if (!contracts.ContainsKey(spc.regszolgid.ToString()))
+                    {
+                      contracts.Add(spc.regszolgid.ToString(), spc.aliasnev);
+                    }
+                  }
+
+                  foreach (ServiceProviderContracts spc in spcs.OrderBy(x => x.szlaszolgnev))
+                  {
+                    if (!serviceProviders.ContainsKey(spc.szlaszolgnev))
+                    {
+                      serviceProviders.Add(spc.szlaszolgnev, spc.szlaszolgnev);
+                    }
+                  }
+                }                
               }
             }
+          }
+        }
 
-            if (listframetable_outer != null)
+        if (groupBy == GroupBy.None)
+        {
+          node = Navigate(url = new Uri(baseUrl, szamla_search_submit_path));
+          DownloadInvoices(url, null, node.SelectNodes(xpath_last_listframetable_rows), false);
+        }
+        else
+        {
+          Dictionary<string, string> groupItems = (groupBy == GroupBy.Contracts) ? contracts : serviceProviders;
+
+          if (groupItems.Count > 0)
+          {
+            foreach (KeyValuePair<string, string> groupItem in groupItems)
             {
-              HtmlElement listframetable_outer_next_div = listframetable_outer.NextSibling;
-              if (listframetable_outer_next_div != null && listframetable_outer_next_div.TagName.ToLower() == "div")
+              node = Navigate(url = new Uri(baseUrl, szamla_search_submit_path), szamla_search_submit_post_data + string.Format(add_query_item, groupBy.ToFilterString(), groupItem.Key));
+              DownloadInvoices(url, groupItem.Value, node.SelectNodes(xpath_last_listframetable_rows), true);
+            }
+            foreach (KeyValuePair<string, string> groupItem in groupItems)
+            {
+              if (stopped)
               {
-                HtmlElement listframetable = listframetable_outer_next_div.FirstChild;
-                if (listframetable != null && listframetable.Id != null && listframetable.Id.Equals(listframetable_id))
-                {
-                  HtmlElementCollection rows = listframetable.GetElementsByTagName("tr");
-
-                  rowCount = 0;
-                  rowIndex = 0;
-
-                  if (invoices.Root != null && invoices.Root.Name != "Invoices")
-                  {
-                    invoices.RemoveNodes();
-                  }
-                  if (invoices.Root == null)
-                  {
-                    invoices.Add(new XElement("Invoices"));
-                  }
-
-                  invoices.Root.Elements("Invoice").Attributes("index").Remove();
-
-                  try
-                  {
-                    int i = 0;
-                    foreach (HtmlElement r in rows)
-                    {
-                      Dictionary<string, string> row = new Dictionary<string, string>();
-                      foreach (HtmlElement anchor in r.GetElementsByTagName("a"))
-                      {
-                        Uri href = new Uri(anchor.GetAttribute("href"));
-                        Dictionary<string, string> query_parts =
-                          href.Query.TrimStart('?').Split('&').Select(x => x.Split('=')).ToDictionary(x => x[0], x => (x.Length > 1) ? x[1] : "");
-                        row.Add(Uri.UnescapeDataString(query_parts["vfw_colid"]).Split('|')[0].Trim(), anchor.InnerText.Trim());
-                      }
-
-                      XElement xrow = invoices.Root.Elements("Invoice").Where(x => x.Attribute("szamlaszam").Value == row["szamlaszam"]).FirstOrDefault();
-                      if (xrow == null)
-                      {
-                        invoices.Root.Add(xrow = new XElement("Invoice"));
-                      }
-
-                      Dictionary<string, string>.Enumerator columnEnum = row.GetEnumerator();
-                      while (columnEnum.MoveNext())
-                      {
-                        XAttribute a;
-                        if ((a = xrow.Attribute(columnEnum.Current.Key)) == null)
-                        {
-                          xrow.Add(a = new XAttribute(columnEnum.Current.Key, columnEnum.Current.Value));
-                        }
-                        else
-                        {
-                          a.SetValue(columnEnum.Current.Value);
-                        }
-                      }
-
-                      xrow.Add(new XAttribute("index", i++));
-                    }
-
-                    missingInvoiceIndexes =
-                      invoices.Root.Elements("Invoice")
-                        .Select(
-                          (element, index) =>
-                            new { Element = element, Index = index }
-                        )
-                        .Where(
-                          x =>
-                            x.Element.Attribute("index") != null &&
-                            (x.Element.Attribute("fajlok") == null || x.Element.Attribute("fajlok").Value == "0")
-                        )
-                        .Select(
-                          x =>
-                            new int[] { x.Index, Convert.ToInt32(x.Element.Attribute("index").Value) }
-                        )
-                        .ToArray();
-
-                    rowCount = missingInvoiceIndexes.Length;
-
-                    if (groupByContracts)
-                    {
-                      AddLog(string.Format("{0}: item(s) of {1} invoice(s) will need to be updated/downloaded!", contractsKeyEnumerator.Current.Value, rowCount));
-                    }
-                    else
-                    {
-                      AddLog(string.Format("Item(s) of {0} invoice(s) will need to be updated/downloaded!", rowCount));
-                    }
-                  }
-                  catch (Exception ex)
-                  {
-                    AddLog("Error: " + ex.Message);
-                  }
-
-                  if (rowCount > 0)
-                  {
-                    webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_select_path, string.Format(szamla_select_query_format, missingInvoiceIndexes[rowIndex++][1])));
-                  }
-                  else if (!groupByContracts || !NextService())
-                  {
-                    webBrowser1.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, logout_path, string.Empty));
-                  }
-                }
-                else
-                {
-                  AddLog("Error: first 'listframetable_*' table's next div sibling's child is not a table or its id is other than the first 'listframetable_*' table's id!");
-                }
+                break;
               }
-              else
+
+              node = Navigate(url = new Uri(baseUrl, szamla_search_submit_path), szamla_search_submit_post_data + string.Format(add_query_item, groupBy.ToFilterString(), groupItem.Key));
+              DownloadInvoices(url, groupItem.Value, node.SelectNodes(xpath_last_listframetable_rows), false);
+            }
+          }
+          else
+          {
+            AddLog("Error: no items found in selected group!");
+          }
+        }
+
+        Navigate(new Uri(baseUrl, logout_path));
+      }
+      else
+      {
+        AddLog("Error: login failed!");
+      }
+    }
+
+    private void DownloadInvoices(Uri url, string groupName, HtmlAgilityPack.HtmlNodeCollection listFrameTableRows, bool discoverOnly)
+    {
+      if (invoices.Root != null && invoices.Root.Name != tag_Invoices)
+      {
+        invoices.RemoveNodes();
+      }
+      if (invoices.Root == null)
+      {
+        invoices.Add(new XElement(tag_Invoices));
+      }
+
+      invoices.Root.Elements(tag_Invoice).Attributes(tag_index).Remove();
+
+      try
+      {
+        int i = 0;
+
+        if (listFrameTableRows != null)
+        {
+          foreach (HtmlAgilityPack.HtmlNode listFrameTableRow in listFrameTableRows)
+          {
+            if (stopped)
+            {
+              return;
+            }
+
+            Dictionary<string, string> row = new Dictionary<string, string>();
+            HtmlAgilityPack.HtmlNodeCollection anchors = listFrameTableRow.SelectNodes(".//a");
+            if (anchors != null)
+            {
+              foreach (HtmlAgilityPack.HtmlNode anchor in anchors)
               {
-                AddLog("Error: next sibling is not a div from 'listframetable_*' found in 'content' tables!");
+                Uri href = new Uri(url, anchor.GetAttributeValue("href", string.Empty));
+                Dictionary<string, string> query_parts =
+                  href.Query.TrimStart('?').Split('&').Select(x => x.Split('=')).ToDictionary(x => x[0], x => (x.Length > 1) ? x[1] : "");
+                row.Add(Uri.UnescapeDataString(query_parts["vfw_colid"]).Split('|')[0].Trim(), WebUtility.HtmlDecode(anchor.InnerText.Trim()));
               }
             }
             else
             {
-              AddLog("Error: no 'listframetable_*' found in 'content' tables!");
+              HtmlAgilityPack.HtmlNodeCollection tds = listFrameTableRow.SelectNodes("td");
+              foreach (HtmlAgilityPack.HtmlNode td in tds)
+              {
+                Uri href = new Uri(url, WebUtility.HtmlDecode(td.GetAttributeValue("onclick", string.Empty)));
+                Dictionary<string, string> query_parts =
+                  href.Query.TrimStart('?').Split('&').Select(x => x.Split('=')).ToDictionary(x => x[0], x => (x.Length > 1) ? x[1] : "");
+                row.Add(Uri.UnescapeDataString(query_parts["vfw_colid"]).Split('|')[0].Trim(), WebUtility.HtmlDecode(td.InnerText.Trim()));
+              }
             }
+
+            XElement xrow =
+              invoices.Root.Elements(tag_Invoice)
+                .Where(
+                  x =>
+                    x.Attribute(field_bemdat).Value == row[field_bemdat] &&
+                    x.Attribute(field_szamlaszam).Value == row[field_szamlaszam]
+                )
+                .FirstOrDefault();
+
+            if (xrow == null)
+            {
+              invoices.Root.Add(xrow = new XElement(tag_Invoice));
+            }
+
+            foreach (KeyValuePair<string, string> column in row)
+            {
+              xrow.SetAttributeValue(column.Key, column.Value);
+            }
+
+            xrow.Add(new XAttribute(tag_index, i++));
           }
-          else
+        }
+
+        missingInvoiceIndexes =
+          invoices.Root.Elements(tag_Invoice)
+            .Select(
+              (element, index) =>
+                new { Element = element, Index = index }
+            )
+            .Where(
+              x =>
+                x.Element.Attribute(tag_index) != null &&
+                (x.Element.Attribute(tag_files) == null || x.Element.Attribute(tag_files).Value == "0")
+            )
+            .Select(
+              x =>
+                new int[] { x.Index, Convert.ToInt32(x.Element.Attribute(tag_index).Value) }
+            )
+            .ToArray();
+
+        if (groupName != null)
+        {
+          if (discoverOnly)
           {
-            AddLog("Error: no tables in 'content' div!");
+            lstGroupItems.Items.Add(string.Format("{0} - {1}/{2}", groupName, missingInvoiceIndexes.Length, (listFrameTableRows != null) ? listFrameTableRows.Count : 0));
           }
         }
         else
         {
-          AddLog("Error: 'content' div not found!");
+          lstGroupItems.Items.Add(string.Format("{0}/{1}", missingInvoiceIndexes.Length, (listFrameTableRows != null) ? listFrameTableRows.Count : 0));
         }
       }
-      else if (e.Url.AbsolutePath.Equals(logout_path))
+      catch (Exception ex)
       {
-        Stop();
+        AddLog("Error: " + ex.Message);
       }
-    }
 
-    private bool NextService()
-    {
-      if (contractsKeyEnumerator.MoveNext() && webBrowser1.Document.Forms.Count > 0)
+      if (!discoverOnly && missingInvoiceIndexes.Length > 0)
       {
-        HtmlElement form = webBrowser1.Document.Forms[0];
+        Uri urlBase = new Uri(dijnet_base_url);
 
-        bool contractSelected = false;
-        foreach (HtmlElement select in form.GetElementsByTagName("select"))
+        for (int i = 0; i < missingInvoiceIndexes.Length; i++)
         {
-          switch (select.Name)
+          if (stopped)
           {
-            case "regszolgid":
-              select.SetAttribute("value", contractsKeyEnumerator.Current.Key);
-              contractSelected = true;
-              break;
+            return;
           }
-        }
 
-        if (contractSelected)
-        {
-          foreach (HtmlElement input in form.GetElementsByTagName("input"))
+          HtmlAgilityPack.HtmlNode node;
+          node = Navigate(url = new Uri(urlBase, szamla_select_path + string.Format(szamla_select_query_format, missingInvoiceIndexes[i][1])));
+          node = Navigate(url = new Uri(urlBase, szamla_letolt_path));
+
+          HtmlAgilityPack.HtmlNode tab_szamla_letolt = node.SelectSingleNode(xpath_div_tab_szamla_letolt);
+          if (tab_szamla_letolt != null)
           {
-            if (input.GetAttribute("value").Equals("Keresés"))
+            HtmlAgilityPack.HtmlNodeCollection anchors = (tab_szamla_letolt.FirstChild != null) ? tab_szamla_letolt.FirstChild.SelectNodes(".//a") : null;
+            if (anchors != null)
             {
-              input.InvokeMember("click");
-              return true;
-            }
-          }
-        }
-
-        return false;
-      }
-      else
-      {
-        return false;
-      }
-    }
-
-    private bool RunQuery()
-    {
-      if (webBrowser1.Document.Forms.Count > 0)
-      {
-        foreach (HtmlElement i in webBrowser1.Document.Forms[0].GetElementsByTagName("input"))
-        {
-          if (i.GetAttribute("value").Equals("Keresés"))
-          {
-            i.InvokeMember("click");
-            return true;
-          }
-        }
-      }
-
-      return false;
-    }
-
-    private void webBrowser2_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
-    {
-      if (e.Url.AbsolutePath.Equals(szamla_select_path))
-      {
-        webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_letolt_path, string.Empty));
-      }
-      else if (e.Url.AbsolutePath.Equals(szamla_letolt_path))
-      {
-        HtmlElement tab_szamla_letolt = webBrowser2.Document.GetElementById("tab_szamla_letolt");
-        if (tab_szamla_letolt != null)
-        {
-          HtmlElementCollection anchors = (tab_szamla_letolt.FirstChild != null) ? tab_szamla_letolt.FirstChild.GetElementsByTagName("a") : null;
-
-          foreach (HtmlElement a in anchors)
-          {
-            Uri href = new Uri(a.GetAttribute("href"));
-
-            if (href.DnsSafeHost.Equals(e.Url.DnsSafeHost))
-            {
-              WebClient wc = new WebClient();
-              wc.Headers.Add(HttpRequestHeader.Cookie, GetGlobalCookies(webBrowser2.Document.Url.AbsoluteUri));
-
-              byte[] fileData = wc.DownloadData(href);
-
-              string[] content_disposition = wc.ResponseHeaders["Content-Disposition"].Split(';');
-              if (content_disposition != null && content_disposition.Length > 1 && content_disposition[0] == "attachment")
+              foreach (HtmlAgilityPack.HtmlNode a in anchors)
               {
-                string[] filename_attr = content_disposition[1].Split('=');
-                if (filename_attr != null && filename_attr.Length > 1 && filename_attr[0] == "filename")
+                Uri href = new Uri(a.GetAttributeValue("href", null), UriKind.RelativeOrAbsolute);
+                if (!href.IsAbsoluteUri)
                 {
-                  string path;
-                  if (groupByContracts)
+                  href = new Uri(url, href);
+                }
+
+                if (href.DnsSafeHost.Equals(url.DnsSafeHost))
+                {
+                  Application.DoEvents();
+
+                  string fileName;
+                  byte[] fileData;
+
+                  if (Download(href, out fileName, out fileData))
                   {
-                    path =
+                    string path =
                       txtPath.Text.TrimEnd(@"\".ToCharArray())
-                    + invoices.Root.Elements("Invoice")
+                    + invoices.Root.Elements(tag_Invoice)
                       .Select(
                         x =>
-                          string.Format(
-                            repository_path_format
-                          , contractsKeyEnumerator.Current.Value
-                          , x.Attribute("bemdat").Value.Replace(".", "")
-                          , Uri.EscapeDataString(x.Attribute("szamlaszam").Value)
-                          )
+                          new {
+                            Szamlaszam = x.Attribute(field_szamlaszam)
+                          , BemDat = x.Attribute(field_bemdat)
+                          , UgyfelAzon = x.Attribute(field_ugyfelazon)
+                          }
                       )
-                      .ElementAt(missingInvoiceIndexes[rowIndex - 1][0]);
-                  }
-                  else
-                  {
-                    path =
-                      txtPath.Text.TrimEnd(@"\".ToCharArray())
-                    + invoices.Root.Elements("Invoice")
                       .Select(
                         x =>
                           string.Format(
                             repository_path_format
                           , contracts
-                            .Where(kv => kv.Value.StartsWith(x.Attribute("ugyfelazon").Value + " ("))
+                            .Where(kv => x.UgyfelAzon != null && kv.Value.StartsWith(x.UgyfelAzon.Value + " ("))
                             .Select(kv => kv.Value)
                             .FirstOrDefault()
-                          , x.Attribute("bemdat").Value.Replace(".", "")
-                          , Uri.EscapeDataString(x.Attribute("szamlaszam").Value)
+                          , x.BemDat.Value.Replace(".", "")
+                          , Uri.EscapeDataString(x.Szamlaszam.Value)
                           )
                       )
-                      .ElementAt(missingInvoiceIndexes[rowIndex - 1][0]);
-                  }
+                      .ElementAt(missingInvoiceIndexes[i][0]);
 
-                  Directory.CreateDirectory(path);
+                    string filename = path + @"\" + fileName;
 
-                  string filename = path + @"\" + filename_attr[1];
-
-                  try
-                  {
-                    Stream file = new FileStream(filename, FileMode.Create);
                     try
                     {
-                      file.Write(fileData, 0, fileData.Length);
-                      file.Flush();
-                      file.Close();
+                      Directory.CreateDirectory(path);
 
-                      AddLog(filename);
+                      Stream file = new FileStream(filename, FileMode.Create);
+                      try
+                      {
+                        file.Write(fileData, 0, fileData.Length);
+                        file.Flush();
+                        file.Close();
+
+                        AddLog(filename);
+                      }
+                      finally
+                      {
+                        file.Dispose();
+                      }
                     }
-                    finally
+                    catch (IOException ex)
                     {
-                      file.Dispose();
+                      AddLog("Error saving file: " + ex.Message);
                     }
                   }
-                  catch (IOException ex)
-                  {
-                    AddLog("Error saving file: " + ex.Message);
-                  }
                 }
-                else
-                {
-                  AddLog("Error: second attribute is not a filename in 'Content-Disposition' header!");
-                }
-              }
-              else
-              {
-                AddLog("Error: no 'Content-Disposition' header in http response or it's not an attachment with at least another attribute!");
               }
             }
-          }
 
-          webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_list_path, string.Empty));
-        }
-        else
-        {
-          AddLog("Error: 'tab_szamla_letolt' table not found!");
+            Navigate(url = new Uri(urlBase, szamla_list_path));
+          }
+          else
+          {
+            AddLog("Error: div 'tab_szamla_letolt' not found!");
+            break;
+          }
         }
       }
-      else if (e.Url.AbsolutePath.Equals(szamla_list_path))
+      else
       {
-        if (rowIndex < rowCount)
-        {
-          webBrowser2.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, szamla_select_path, string.Format(szamla_select_query_format, missingInvoiceIndexes[rowIndex++][1])));
-        }
-        else if (!groupByContracts || !NextService())
-        {
-          webBrowser1.Navigate(string.Format(url_format, e.Url.Scheme, e.Url.DnsSafeHost, logout_path, string.Empty));
-        }
+        Application.DoEvents();
+      }
+    }
+  }
+
+  public enum GroupBy
+  {
+    None,
+    Contracts,
+    ServiceProviders
+  }
+
+  static class GroupByMethods
+  {
+    public static String ToFilterString(this GroupBy groupBy)
+    {
+      switch (groupBy)
+      {
+        case GroupBy.Contracts:
+          return "regszolgid";
+        case GroupBy.ServiceProviders:
+          return "szlaszolgnev";
+        default:
+          return null;
       }
     }
   }
